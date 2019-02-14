@@ -5,22 +5,25 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 )
 
 const maxUploadSize = 2 * 1024 * 1024 // 2 mb
-const uploadPath = "./tmp"
+const uploadPath = "./uploads"
+const outputPathRoot = "./pdf"
+const inputExtension = ".tex"
+const outputExtension = ".pdf"
 
 func main() {
 	http.HandleFunc("/upload", uploadFileHandler())
 
-	fs := http.FileServer(http.Dir(uploadPath))
-	http.Handle("/files/", http.StripPrefix("/files", fs))
+	fs := http.FileServer(http.Dir(outputPathRoot))
+	http.Handle("/pdf/", http.StripPrefix("/pdf", fs))
 
-	log.Print("Server started on localhost:8080, use /upload for uploading files and /files/{fileName} for downloading")
+	log.Print("Server started on localhost:8080, use /upload for uploading files and /pdf/{fileName} for downloading")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
@@ -34,8 +37,7 @@ func uploadFileHandler() http.HandlerFunc {
 		}
 
 		// parse and validate file and post parameters
-		fileType := r.PostFormValue("type")
-		file, _, err := r.FormFile("uploadFile")
+		file, _, err := r.FormFile("uploadedFile")
 		if err != nil {
 			renderError(w, "INVALID_FILE", http.StatusBadRequest)
 			return
@@ -47,25 +49,9 @@ func uploadFileHandler() http.HandlerFunc {
 			return
 		}
 
-		// check file type, detectcontenttype only needs the first 512 bytes
-		filetype := http.DetectContentType(fileBytes)
-		switch filetype {
-		case "image/jpeg", "image/jpg":
-		case "image/gif", "image/png":
-		case "application/pdf":
-			break
-		default:
-			renderError(w, "INVALID_FILE_TYPE", http.StatusBadRequest)
-			return
-		}
+		// generate random name for file
 		fileName := randToken(12)
-		fileEndings, err := mime.ExtensionsByType(fileType)
-		if err != nil {
-			renderError(w, "CANT_READ_FILE_TYPE", http.StatusInternalServerError)
-			return
-		}
-		newPath := filepath.Join(uploadPath, fileName+fileEndings[0])
-		fmt.Printf("FileType: %s, File: %s\n", fileType, newPath)
+		newPath := filepath.Join(uploadPath, fileName+inputExtension)
 
 		// write file
 		newFile, err := os.Create(newPath)
@@ -78,13 +64,26 @@ func uploadFileHandler() http.HandlerFunc {
 			renderError(w, "CANT_WRITE_FILE", http.StatusInternalServerError)
 			return
 		}
-		w.Write([]byte("SUCCESS"))
+
+		// convert file
+		outputFilePath := filepath.Join(outputPathRoot, fileName+outputExtension)
+		fmt.Printf("Uploaded file:  %s\n", newPath)
+		fmt.Printf("Converted file: %s\n", outputFilePath)
+		cmd := exec.Command("pandoc", newPath, "-o", outputFilePath)
+		err = cmd.Run()
+		if err != nil {
+			renderError(w, "CANT_CONVERT_FILE", http.StatusInternalServerError)
+			return
+		}
+
+		// return response
+		w.Write([]byte("/" + outputFilePath))
 	})
 }
 
 func renderError(w http.ResponseWriter, message string, statusCode int) {
 	w.WriteHeader(http.StatusBadRequest)
-	w.Write([]byte(message))
+	w.Write([]byte("ERROR: " + message))
 }
 
 func randToken(len int) string {
